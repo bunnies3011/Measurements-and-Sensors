@@ -9,6 +9,8 @@ import math, copy
 import matplotlib.pyplot as plt
 plt.style.use('./deeplearning.mplstyle')
 from render_figure import plt_house_x, plt_contour_wgrad, plt_divergence, plt_gradients
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
 
 def compute_cost(x, y, w, b): 
     """
@@ -111,17 +113,17 @@ def gradient_descent(x, y, w_in, b_in, alpha, num_iters, cost_function, gradient
  
     return w, b, J_history, p_history #return w and J,w history for graphing
 
-def find_w_and_b(x_s, y_s):
+def find_w_and_b(x_val, y_val):
     w_init = 0
     b_init = 0
     # some gradient descent settings
     iterations = 10000
     tmp_alpha = 1.0e-2
     # run gradient descent
-    mx = x_s.mean();
-    sx = x_s.std(ddof=0);
-    my = y_s.mean();
-    sy = y_s.std(ddof=0);
+    mx, sx = x_val.mean(), x_val.std()
+    my     = y_val.mean()
+    x_s    = (x_val - mx)/sx
+    y_s    = (y_val - my)
     w_final, b_final, J_hist, p_hist = gradient_descent(x_s ,y_s, w_init, b_init, tmp_alpha, 
                                                         iterations, compute_cost, compute_gradient)
     print(f"(w,b) found by gradient descent: ({w_final:8.4f},{b_final:8.4f})")
@@ -131,6 +133,7 @@ def find_w_and_b(x_s, y_s):
         return w, b
     w, b = convert_to_original_params(w_final, b_final, mx, sx, my)
     print(w, b) 
+    return w,b
 
 
 def simulation(x_fold, y_fold, *,
@@ -219,13 +222,11 @@ def kfold_linear_1d(
 
         if verbose:
             print(f"\n===== Fold {i} =====")
-            print("x_val:", x_val)
-            print("y_val:", y_val)
+            print("x_val:", x_tr)
+            print("y_val:", y_tr)
 
         # Fit tuyến tính y = w*x + b trên TRAIN
-        mx, my = x_tr.mean(), y_tr.mean()
-        w = np.dot(x_tr - mx, y_tr - my) / np.dot(x_tr - mx, x_tr - mx)
-        b = my - w * mx
+        w,b = find_w_and_b(x_tr,y_tr)
 
         # Đánh giá trên VAL
         y_pred = w * x_val + b
@@ -234,6 +235,8 @@ def kfold_linear_1d(
         ss_res = np.sum((y_val - y_pred)**2)
         ss_tot = np.sum((y_val - y_val.mean())**2)
         r2 = 1 - ss_res / ss_tot if ss_tot != 0 else 0
+
+        print(f"Fold {i} | MSE={mse:.6f} | MAE={mae:.6f} | R2={r2:.6f}")
 
         results.append({
             "fold": i,
@@ -248,13 +251,316 @@ def kfold_linear_1d(
             simulation(x_val, y_val,
                        fig_name=f"Fold {i}",
                        block=True,
-                       save_path=save_path)
-            
-        
-        
+                       save_path=save_path)   
     avg = {
         "MSE": np.mean([r["MSE"] for r in results]),
         "MAE": np.mean([r["MAE"] for r in results]),
         "R2": np.mean([r["R2"] for r in results]),
     }
+    
+    return {"folds": results, "averages": avg}
+def kfold_linear_2d(
+    x, y, k=5,
+    shuffle=True, seed=42,
+    standardize_per_fold=False,  # bạn đang chuẩn hoá riêng; thường để False
+    verbose=False,
+    interactive=True,            # thêm tham số
+    save_dir=None,               # nếu muốn lưu ảnh từng fold
+):
+    import numpy as np
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    n = len(x)
+
+    if n != len(y): raise ValueError("x và y phải cùng kích thước")
+    if k < 2 or k > n: raise ValueError("k phải nằm trong [2, len(x)]")
+
+    idx = np.arange(n)
+    if shuffle:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(idx)
+
+    import os
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    folds = np.array_split(idx, k)
+    results = []
+
+    for i, val_idx in enumerate(folds, start=1):
+        train_idx = np.concatenate([folds[j] for j in range(k) if j != (i-1)])
+        x_tr, y_tr = x[train_idx], y[train_idx]
+        x_val, y_val = x[val_idx], y[val_idx]
+
+        if verbose:
+            print(f"\n===== Fold {i} =====")
+            print("x_val:", x_tr)
+            print("y_val:", y_tr)
+
+        # Fit tuyến tính y = w*x + b trên TRAIN
+        X_tr = x_tr.reshape(-1, 1)              # (n,1)
+        poly = PolynomialFeatures(degree=2, include_bias=False)
+        X_tr_poly = poly.fit_transform(X_tr)        # tạo [x, x²]
+
+        model = LinearRegression()
+        model.fit(X_tr_poly, y_tr)
+
+        # Hệ số và sai số
+        print("Coefficients:", model.coef_)   # [w1, w2]
+        print("Intercept:", model.intercept_) # b
+        print(f"Hàm hồi quy: y = {model.intercept_:.3f} + {model.coef_[0]:.3f}*x + {model.coef_[1]:.3f}*x²")
+        # Đánh giá trên VAL
+        X_val = x_val.reshape(-1, 1)                    # (n_val, 1)    << cần 2D
+        X_val_poly = poly.transform(X_val)              # chỉ transform
+        y_pred = model.predict(X_val_poly)  
+        mse = np.mean((y_pred - y_val)**2)
+        mae = np.mean(np.abs(y_pred - y_val))
+        ss_res = np.sum((y_val - y_pred)**2)
+        ss_tot = np.sum((y_val - y_val.mean())**2)
+        r2 = 1 - ss_res / ss_tot if ss_tot != 0 else 0
+
+        print(f"Fold {i} | MSE={mse:.6f} | MAE={mae:.6f} | R2={r2:.6f}")
+
+        results.append({
+            "fold": i,
+            "w": model.coef_[0], "w2": model.coef_[1], "b": model.intercept_,
+            "MSE": mse, "MAE": mae, "R2": r2,
+            "x_val": x_val, "y_val": y_val,
+        })
+
+    avg = {
+        "MSE": np.mean([r["MSE"] for r in results]),
+        "MAE": np.mean([r["MAE"] for r in results]),
+        "R2": np.mean([r["R2"] for r in results]),
+    }
+    
+    return {"folds": results, "averages": avg}
+def kfold_linear_3d(
+    x, y, k=5,
+    shuffle=True, seed=42,
+    standardize_per_fold=False,  # bạn đang chuẩn hoá riêng; thường để False
+    verbose=False,
+    interactive=True,            # thêm tham số
+    save_dir=None,               # nếu muốn lưu ảnh từng fold
+):
+    import numpy as np
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    n = len(x)
+
+    if n != len(y): raise ValueError("x và y phải cùng kích thước")
+    if k < 2 or k > n: raise ValueError("k phải nằm trong [2, len(x)]")
+
+    idx = np.arange(n)
+    if shuffle:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(idx)
+
+    import os
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    folds = np.array_split(idx, k)
+    results = []
+
+    for i, val_idx in enumerate(folds, start=1):
+        train_idx = np.concatenate([folds[j] for j in range(k) if j != (i-1)])
+        x_tr, y_tr = x[train_idx], y[train_idx]
+        x_val, y_val = x[val_idx], y[val_idx]
+
+        if verbose:
+            print(f"\n===== Fold {i} =====")
+            print("x_val:", x_tr)
+            print("y_val:", y_tr)
+
+        # Fit tuyến tính y = w*x + b trên TRAIN
+        X_tr = x_tr.reshape(-1, 1)              # (n,1)
+        poly = PolynomialFeatures(degree=3, include_bias=False)
+        X_tr_poly = poly.fit_transform(X_tr)        # tạo [x, x²]
+
+        model = LinearRegression()
+        model.fit(X_tr_poly, y_tr)
+
+        # Hệ số và sai số
+        print("Coefficients:", model.coef_)   # [w1, w2]
+        print("Intercept:", model.intercept_) # b
+        print(f"Hàm hồi quy: y = {model.intercept_:.3f} + {model.coef_[0]:.3f}*x + {model.coef_[1]:.3f}*x² + {model.coef_[2]:.3f}*x³")
+        # Đánh giá trên VAL
+        X_val = x_val.reshape(-1, 1)                    # (n_val, 1)    << cần 2D
+        X_val_poly = poly.transform(X_val)              # chỉ transform
+        y_pred = model.predict(X_val_poly)  
+        mse = np.mean((y_pred - y_val)**2)
+        mae = np.mean(np.abs(y_pred - y_val))
+        ss_res = np.sum((y_val - y_pred)**2)
+        ss_tot = np.sum((y_val - y_val.mean())**2)
+        r2 = 1 - ss_res / ss_tot if ss_tot != 0 else 0
+
+        print(f"Fold {i} | MSE={mse:.6f} | MAE={mae:.6f} | R2={r2:.6f}")
+
+        results.append({
+            "fold": i,
+            "w": model.coef_[0], "w2": model.coef_[1], "w3": model.coef_[2],"b": model.intercept_,
+            "MSE": mse, "MAE": mae, "R2": r2,
+            "x_val": x_val, "y_val": y_val,
+        })
+
+    avg = {
+        "MSE": np.mean([r["MSE"] for r in results]),
+        "MAE": np.mean([r["MAE"] for r in results]),
+        "R2": np.mean([r["R2"] for r in results]),
+    }
+    
+    return {"folds": results, "averages": avg}
+def kfold_linear_4d(
+    x, y, k=5,
+    shuffle=True, seed=42,
+    standardize_per_fold=False,  # bạn đang chuẩn hoá riêng; thường để False
+    verbose=False,
+    interactive=True,            # thêm tham số
+    save_dir=None,               # nếu muốn lưu ảnh từng fold
+):
+    import numpy as np
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    n = len(x)
+
+    if n != len(y): raise ValueError("x và y phải cùng kích thước")
+    if k < 2 or k > n: raise ValueError("k phải nằm trong [2, len(x)]")
+
+    idx = np.arange(n)
+    if shuffle:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(idx)
+
+    import os
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    folds = np.array_split(idx, k)
+    results = []
+
+    for i, val_idx in enumerate(folds, start=1):
+        train_idx = np.concatenate([folds[j] for j in range(k) if j != (i-1)])
+        x_tr, y_tr = x[train_idx], y[train_idx]
+        x_val, y_val = x[val_idx], y[val_idx]
+
+        if verbose:
+            print(f"\n===== Fold {i} =====")
+            print("x_val:", x_tr)
+            print("y_val:", y_tr)
+
+        # Fit tuyến tính y = w*x + b trên TRAIN
+        X_tr = x_tr.reshape(-1, 1)              # (n,1)
+        poly = PolynomialFeatures(degree=4, include_bias=False)
+        X_tr_poly = poly.fit_transform(X_tr)        # tạo [x, x²]
+
+        model = LinearRegression()
+        model.fit(X_tr_poly, y_tr)
+
+        # Hệ số và sai số
+        print("Coefficients:", model.coef_)   # [w1, w2]
+        print("Intercept:", model.intercept_) # b
+        print(f"Hàm hồi quy: y = {model.intercept_:.3f} + {model.coef_[0]:.3f}*x + {model.coef_[1]:.3f}*x² + {model.coef_[2]:.3f}*x^3 + {model.coef_[3]:.3f}*x^4"  )
+        # Đánh giá trên VAL
+        X_val = x_val.reshape(-1, 1)                    # (n_val, 1)    << cần 2D
+        X_val_poly = poly.transform(X_val)              # chỉ transform
+        y_pred = model.predict(X_val_poly)  
+        mse = np.mean((y_pred - y_val)**2)
+        mae = np.mean(np.abs(y_pred - y_val))
+        ss_res = np.sum((y_val - y_pred)**2)
+        ss_tot = np.sum((y_val - y_val.mean())**2)
+        r2 = 1 - ss_res / ss_tot if ss_tot != 0 else 0
+
+        print(f"Fold {i} | MSE={mse:.6f} | MAE={mae:.6f} | R2={r2:.6f}")
+
+        results.append({
+            "fold": i,
+            "w": model.coef_[0], "w2": model.coef_[1], "w3": model.coef_[2], "w4": model.coef_[3], "b": model.intercept_,
+            "MSE": mse, "MAE": mae, "R2": r2,
+            "x_val": x_val, "y_val": y_val,
+        })
+
+    avg = {
+        "MSE": np.mean([r["MSE"] for r in results]),
+        "MAE": np.mean([r["MAE"] for r in results]),
+        "R2": np.mean([r["R2"] for r in results]),
+    }
+    
+    return {"folds": results, "averages": avg}
+
+def kfold_linear_8d(
+    x, y, k=5,
+    shuffle=True, seed=42,
+    standardize_per_fold=False,  # bạn đang chuẩn hoá riêng; thường để False
+    verbose=False,
+    interactive=True,            # thêm tham số
+    save_dir=None,               # nếu muốn lưu ảnh từng fold
+):
+    import numpy as np
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    n = len(x)
+
+    if n != len(y): raise ValueError("x và y phải cùng kích thước")
+    if k < 2 or k > n: raise ValueError("k phải nằm trong [2, len(x)]")
+
+    idx = np.arange(n)
+    if shuffle:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(idx)
+
+    import os
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    folds = np.array_split(idx, k)
+    results = []
+
+    for i, val_idx in enumerate(folds, start=1):
+        train_idx = np.concatenate([folds[j] for j in range(k) if j != (i-1)])
+        x_tr, y_tr = x[train_idx], y[train_idx]
+        x_val, y_val = x[val_idx], y[val_idx]
+
+        if verbose:
+            print(f"\n===== Fold {i} =====")
+            print("x_val:", x_tr)
+            print("y_val:", y_tr)
+
+        # Fit tuyến tính y = w*x + b trên TRAIN
+        X_tr = x_tr.reshape(-1, 1)              # (n,1)
+        poly = PolynomialFeatures(degree=8, include_bias=False)
+        X_tr_poly = poly.fit_transform(X_tr)        # tạo [x, x²]
+
+        model = LinearRegression()
+        model.fit(X_tr_poly, y_tr)
+
+        # Hệ số và sai số
+        print("Coefficients:", model.coef_)   # [w1, w2]
+        print("Intercept:", model.intercept_) # b
+        print(f"Hàm hồi quy: y = {model.intercept_:.3f} + {model.coef_[0]:.3f}*x + {model.coef_[1]:.3f}*x² + {model.coef_[2]:.3f}*x^3 + {model.coef_[3]:.3f}*x^4 + {model.coef_[4]:.3f}*x^5 + {model.coef_[5]:.3f}*x^6 + {model.coef_[6]:.3f}*x^7 + {model.coef_[7]:.3f}*x^8 "  )
+        # Đánh giá trên VAL
+        X_val = x_val.reshape(-1, 1)                    # (n_val, 1)    << cần 2D
+        X_val_poly = poly.transform(X_val)              # chỉ transform
+        y_pred = model.predict(X_val_poly)  
+        mse = np.mean((y_pred - y_val)**2)
+        mae = np.mean(np.abs(y_pred - y_val))
+        ss_res = np.sum((y_val - y_pred)**2)
+        ss_tot = np.sum((y_val - y_val.mean())**2)
+        r2 = 1 - ss_res / ss_tot if ss_tot != 0 else 0
+
+        print(f"Fold {i} | MSE={mse:.6f} | MAE={mae:.6f} | R2={r2:.6f}")
+
+        results.append({
+            "fold": i,
+            "w": model.coef_[0], "w2": model.coef_[1], "w3": model.coef_[2], "w4": model.coef_[3], "w5": model.coef_[4], "w6": model.coef_[5], "w7": model.coef_[6], "w8": model.coef_[7], "b": model.intercept_,
+            "MSE": mse, "MAE": mae, "R2": r2,
+            "x_val": x_val, "y_val": y_val,
+        })
+
+    avg = {
+        "MSE": np.mean([r["MSE"] for r in results]),
+        "MAE": np.mean([r["MAE"] for r in results]),
+        "R2": np.mean([r["R2"] for r in results]),
+    }
+    
     return {"folds": results, "averages": avg}
