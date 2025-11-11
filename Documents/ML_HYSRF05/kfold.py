@@ -222,8 +222,8 @@ def kfold_linear_1d(
 
         if verbose:
             print(f"\n===== Fold {i} =====")
-            print("x_val:", x_tr)
-            print("y_val:", y_tr)
+            print("x_tr:", x_tr)
+            print("y_tr:", y_tr)
 
         # Fit tuyến tính y = w*x + b trên TRAIN
         w,b = find_w_and_b(x_tr,y_tr)
@@ -294,8 +294,8 @@ def kfold_linear_2d(
 
         if verbose:
             print(f"\n===== Fold {i} =====")
-            print("x_val:", x_tr)
-            print("y_val:", y_tr)
+            print("x_tr:", x_tr)
+            print("y_tr:", y_tr)
 
         # Fit tuyến tính y = w*x + b trên TRAIN
         X_tr = x_tr.reshape(-1, 1)              # (n,1)
@@ -305,6 +305,41 @@ def kfold_linear_2d(
         model = LinearRegression()
         model.fit(X_tr_poly, y_tr)
 
+        # Tạo lưới x để vẽ đường cong
+        x_plot = np.linspace(x.min(), x.max(), 200).reshape(-1, 1)
+        y_plot = model.predict(poly.transform(x_plot))
+
+        # === VẼ ĐỒ THỊ ===
+        plt.figure()
+
+        # 1) Vẽ TẤT CẢ điểm (x, y) cho dễ hình dung
+        plt.scatter(x, y, s=30, alpha=0.3, label='Tất cả điểm (full data)')
+
+        # 2) Tô đậm điểm TRAIN của fold này
+        plt.scatter(x_tr, y_tr, s=40, alpha=0.8,
+                    label=f'Train fold {i}')
+
+        # 3) Đánh dấu riêng điểm VALIDATION của fold này
+        plt.scatter(x_val, y_val, s=60, marker='s', edgecolor='k',
+                    label=f'Validation fold {i}')
+
+        # 4) Đường fit bậc 2 trên TRAIN
+        plt.plot(x_plot, y_plot, linewidth=2,
+                 label='Hàm bậc 2 fit (train)')
+
+        plt.xlabel('x')
+        plt.ylabel('y')
+        plt.title(f'Fold {i} - Hồi quy bậc 2')
+        plt.legend()
+        plt.grid(True)
+
+        if interactive:
+            plt.show()
+        else:
+            if save_dir is not None:
+                out_path = os.path.join(save_dir, f"fold_{i}.png")
+                plt.savefig(out_path, dpi=150, bbox_inches='tight')
+            plt.close()
         # Hệ số và sai số
         print("Coefficients:", model.coef_)   # [w1, w2]
         print("Intercept:", model.intercept_) # b
